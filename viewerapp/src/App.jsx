@@ -129,6 +129,47 @@ export default function App() {
   const [hoverRatio, setHoverRatio] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
 
+  // Download dropdown state
+  const [isDownloadOpen, setIsDownloadOpen] = useState(false);
+  const downloadRef = useRef(null);
+
+  // Close download dropdown when clicking outside
+  useEffect(() => {
+    if (!isDownloadOpen) return;
+    const handleClickOutside = (e) => {
+      if (downloadRef.current && !downloadRef.current.contains(e.target)) {
+        setIsDownloadOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isDownloadOpen]);
+
+  // Download handlers
+  const handleDownloadMarkdown = () => {
+    setIsDownloadOpen(false);
+    const link = document.createElement('a');
+    link.href = '/bookData.md';
+    link.download = 'bookData.md';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleDownloadJson = () => {
+    setIsDownloadOpen(false);
+    const jsonString = JSON.stringify(bookData, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'bookData.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Save state to localStorage
   useEffect(() => {
     try {
@@ -269,6 +310,75 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [goToNextPage, goToPrevPage]);
+
+  // Wheel navigation when there is no vertical scroll available
+  const wheelAccumulatorRef = useRef(0);
+  const lastWheelTimeRef = useRef(0);
+
+  useEffect(() => {
+    const handleWheel = (e) => {
+      // Don't trigger if inside TOC drawer or input
+      if (e.target.closest('.toc-drawer, input, textarea, select')) return;
+
+      // Check if target or any parent has active vertical scroll room
+      let el = e.target;
+      let hasScrollableParent = false;
+
+      while (el && el !== document.body && el !== document.documentElement) {
+        const overflowY = window.getComputedStyle(el).overflowY;
+        const canScroll = overflowY === 'auto' || overflowY === 'scroll';
+        if (canScroll && el.scrollHeight > el.clientHeight + 2) {
+          // Check if it's currently at boundary or has room to scroll
+          const isScrollingDown = e.deltaY > 0;
+          const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+          const isAtTop = el.scrollTop <= 2;
+
+          if (isScrollingDown && !isAtBottom) {
+            hasScrollableParent = true;
+            break;
+          }
+          if (!isScrollingDown && !isAtTop) {
+            hasScrollableParent = true;
+            break;
+          }
+        }
+        el = el.parentElement;
+      }
+
+      if (hasScrollableParent) {
+        wheelAccumulatorRef.current = 0;
+        return;
+      }
+
+      // No vertical scroll possible in this context: use wheel to navigate pages
+      if (Math.abs(e.deltaY) < 6) return;
+
+      const now = Date.now();
+      // Reset accumulator if user stopped scrolling for a moment
+      if (now - lastWheelTimeRef.current > 400) {
+        wheelAccumulatorRef.current = 0;
+      }
+      lastWheelTimeRef.current = now;
+
+      wheelAccumulatorRef.current += e.deltaY;
+
+      // Threshold to trigger page flip (prevents accidental trigger on small trackpad gestures)
+      const THRESHOLD = 50;
+
+      if (wheelAccumulatorRef.current >= THRESHOLD) {
+        e.preventDefault();
+        wheelAccumulatorRef.current = 0;
+        goToNextPage();
+      } else if (wheelAccumulatorRef.current <= -THRESHOLD) {
+        e.preventDefault();
+        wheelAccumulatorRef.current = 0;
+        goToPrevPage();
+      }
+    };
+
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleWheel);
   }, [goToNextPage, goToPrevPage]);
 
   // Intercept footnote and page hyperlinks
@@ -458,11 +568,11 @@ export default function App() {
             <span>목차</span>
           </button>
 
-          {activeTocItem && (
+          {/* {activeTocItem && (
             <span className="current-chapter-title" title={activeTocItem.title}>
               {activeTocItem.title}
             </span>
-          )}
+          )} */}
         </div>
 
         <div className="header-center">
@@ -554,6 +664,59 @@ export default function App() {
             >
               가+
             </button>
+            <button
+              type="button"
+              className="btn-font-size btn-font-reset"
+              disabled={fontSize === 17}
+              onClick={() => setFontSize(17)}
+              title="글자 크기 초기화 (17px)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Download Dropdown */}
+          <div className="download-dropdown-container" ref={downloadRef}>
+            <button
+              type="button"
+              className={`btn-header-download ${isDownloadOpen ? 'active' : ''}`}
+              onClick={() => setIsDownloadOpen((prev) => !prev)}
+              title="도서 원문 다운로드 (Markdown, JSON)"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+
+            </button>
+
+            {isDownloadOpen && (
+              <div className="download-menu">
+                <div className="download-menu-header">원문 파일 다운로드</div>
+                <button
+                  type="button"
+                  className="download-menu-item"
+                  onClick={handleDownloadMarkdown}
+                >
+                  <div className="download-item-info">
+                    <span className="download-item-title">Markdown (.md)</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="download-menu-item"
+                  onClick={handleDownloadJson}
+                >
+                  <div className="download-item-info">
+                    <span className="download-item-title">JSON (.json)</span>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -730,8 +893,8 @@ export default function App() {
               style={{ left: `${previewTooltipPercent}%` }}
             >
               <div className="tooltip-page-num">
-                도서 p.{previewPage.pageNumber}
-                {previewChapter ? ` · ${previewChapter.title}` : ''}
+
+                {previewChapter ? `${previewChapter.title}` : ''}
               </div>
               <div className="tooltip-sub">
                 {previewIndex + 1} / {totalPages}
@@ -740,22 +903,10 @@ export default function App() {
           )}
         </div>
 
-        <button
-          type="button"
-          className="btn-nav"
-          disabled={currentPageIndex === 0}
-          onClick={goToPrevPage}
-          title="이전 페이지 (단축키: ←)"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-          <span>이전</span>
-        </button>
+        <div></div>
 
         <div className="nav-center">
           <form className="page-jump-box" onSubmit={handleJumpSubmit}>
-            <span>페이지</span>
             <input
               type="text"
               className="page-input"
@@ -773,18 +924,7 @@ export default function App() {
           </form>
         </div>
 
-        <button
-          type="button"
-          className="btn-nav"
-          disabled={currentPageIndex === totalPages - 1}
-          onClick={goToNextPage}
-          title="다음 페이지 (단축키: →, Space)"
-        >
-          <span>다음</span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6"></polyline>
-          </svg>
-        </button>
+        <div></div>
       </footer>
 
       {/* Table of Contents Drawer */}

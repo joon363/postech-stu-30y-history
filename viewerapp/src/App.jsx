@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { marked } from 'marked';
 import bookData from './bookData.json';
 import './App.css';
@@ -7,6 +7,59 @@ marked.setOptions({
   gfm: true,
   breaks: true,
 });
+
+// Map of pageNumber to pageIndex
+const pageNumToIdx = {};
+bookData.pages.forEach((p) => {
+  pageNumToIdx[p.pageNumber] = p.pageIndex;
+});
+
+// Footnote number -> { target: targetPageNumber, source: sourcePageNumber }
+const FOOTNOTE_MAP = {
+  '1': { target: 306, source: 16 },
+  '2': { target: 308, source: 18 },
+  '3': { target: 311, source: 23 },
+  '4': { target: 313, source: 28 },
+  '5': { target: 315, source: 30 },
+  '6': { target: 315, source: 30 },
+  '7': { target: 320, source: 36 },
+  '8': { target: 322, source: 37 },
+  '9': { target: 322, source: 37 },
+  '10': { target: 330, source: 63 },
+  '11': { target: 331, source: 68 },
+  '12': { target: 335, source: 78 },
+  '13': { target: 321, source: 133 },
+  '14': { target: 321, source: 235 },
+};
+
+function processMarkdownWithFootnotes(content, pageNum) {
+  if (!content) return '';
+  const lines = content.split('\n');
+  const processedLines = lines.map((line) => {
+    // 1. Footnote definition lines: e.g. '3\) 311페이지에 기록' or '8) 322페이지에 기록' or '\* 321페이지에 기록'
+    const defMatch = line.match(/^\s*(\*|\\\*|\d+)(?:\\?\))\s*(\d+)페이지에 기록(.*)$/);
+    if (defMatch) {
+      const fn = defMatch[1].replace('\\', '');
+      const targetPage = defMatch[2];
+      const rest = defMatch[3] || '';
+      return `<a href="#page-${targetPage}" class="footnote-def-link" data-page-num="${targetPage}" title="${targetPage}페이지로 바로가기">${fn}) ${targetPage}페이지에 기록</a>${rest}`;
+    }
+
+    // 2. Footnote in-text references: e.g. 전달3), 폐지되었다.4), 정책5), 사건8), 9)
+    return line.replace(/([^\d\n\r])(\d{1,2})\\?\)/g, (match, prefix, num) => {
+      const entry = FOOTNOTE_MAP[num];
+      if (!entry) return match;
+      if (pageNum === entry.source) {
+        return `${prefix}<a href="#page-${entry.target}" class="footnote-ref-link" data-page-num="${entry.target}" title="${entry.target}페이지로 이동">${num})</a>`;
+      }
+      if (pageNum === entry.target) {
+        return `${prefix}<a href="#page-${entry.source}" class="footnote-ref-link" data-page-num="${entry.source}" title="${entry.source}페이지로 이동">${num})</a>`;
+      }
+      return match;
+    });
+  });
+  return marked.parse(processedLines.join('\n'));
+}
 
 export default function App() {
   const totalPages = bookData.totalPages;
@@ -22,15 +75,33 @@ export default function App() {
         }
       }
     } catch {
-      // Ignore localStorage read error
+      // Ignore
     }
     return 0;
   });
 
+  // View Mode: 'single' (한쪽 보기) | 'double' (두쪽 보기)
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('postech_reader_view') || 'single';
+    } catch {
+      return 'single';
+    }
+  });
+
+  // Fit Mode: 'height' (맞춤: 높이 - default) | 'fit' (맞춤 없음) | 'width' (너비 맞춤)
+  const [fitMode, setFitMode] = useState(() => {
+    try {
+      return localStorage.getItem('postech_reader_fit') || 'height';
+    } catch {
+      return 'height';
+    }
+  });
+
   const [isTocOpen, setIsTocOpen] = useState(false);
   const [tocSearch, setTocSearch] = useState('');
-  
-  // Font preferences (persisted)
+
+  // Font preferences
   const [fontFamily, setFontFamily] = useState(() => {
     try {
       return localStorage.getItem('postech_reader_font') || 'serif';
@@ -51,24 +122,35 @@ export default function App() {
   const [jumpInput, setJumpInput] = useState('');
   const workspaceRef = useRef(null);
   const activeTocItemRef = useRef(null);
+  const progressBarRef = useRef(null);
 
-  const currentPage = bookData.pages[currentPageIndex] || bookData.pages[0];
+  // YouTube-style progress bar states
+  const [isHoveringBar, setIsHoveringBar] = useState(false);
+  const [hoverRatio, setHoverRatio] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Save current page
+  // Save state to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('postech_30y_page', String(currentPageIndex));
     } catch {
-      // Ignore localStorage write error
+      // Ignore
     }
-    // Scroll workspace to top on page flip
     if (workspaceRef.current) {
       workspaceRef.current.scrollTop = 0;
     }
     setJumpInput(String(currentPageIndex + 1));
   }, [currentPageIndex]);
 
-  // Save font preferences
+  useEffect(() => {
+    try {
+      localStorage.setItem('postech_reader_view', viewMode);
+      localStorage.setItem('postech_reader_fit', fitMode);
+    } catch {
+      // Ignore
+    }
+  }, [viewMode, fitMode]);
+
   useEffect(() => {
     try {
       localStorage.setItem('postech_reader_font', fontFamily);
@@ -78,25 +160,92 @@ export default function App() {
     }
   }, [fontFamily, fontSize]);
 
-  // Navigate functions
-  const goToNextPage = () => {
-    setCurrentPageIndex((prev) => (prev < totalPages - 1 ? prev + 1 : prev));
-  };
-
-  const goToPrevPage = () => {
-    setCurrentPageIndex((prev) => (prev > 0 ? prev - 1 : prev));
-  };
-
-  const goToPage = (index) => {
+  // Navigate function with bounds check
+  const goToPage = useCallback((index) => {
     if (index >= 0 && index < totalPages) {
       setCurrentPageIndex(index);
     }
+  }, [totalPages]);
+
+  // Navigation handlers (adapted for single & double view)
+  const goToNextPage = useCallback(() => {
+    if (viewMode === 'double') {
+      if (currentPageIndex === 0) {
+        goToPage(1);
+      } else {
+        const spreadOffset = (currentPageIndex - 1) % 2;
+        const leftIdx = currentPageIndex - spreadOffset;
+        const nextSpread = leftIdx + 2;
+        if (nextSpread < totalPages) {
+          goToPage(nextSpread);
+        }
+      }
+    } else {
+      if (currentPageIndex < totalPages - 1) {
+        goToPage(currentPageIndex + 1);
+      }
+    }
+  }, [viewMode, currentPageIndex, totalPages, goToPage]);
+
+  const goToPrevPage = useCallback(() => {
+    if (viewMode === 'double') {
+      if (currentPageIndex <= 2) {
+        goToPage(0);
+      } else {
+        const spreadOffset = (currentPageIndex - 1) % 2;
+        const leftIdx = currentPageIndex - spreadOffset;
+        const prevSpread = leftIdx - 2;
+        goToPage(Math.max(1, prevSpread));
+      }
+    } else {
+      if (currentPageIndex > 0) {
+        goToPage(currentPageIndex - 1);
+      }
+    }
+  }, [viewMode, currentPageIndex, goToPage]);
+
+  // Cycle fit mode: height -> fit -> width -> height
+  const cycleFitMode = () => {
+    setFitMode((prev) => {
+      if (prev === 'height') return 'fit';
+      if (prev === 'fit') return 'width';
+      return 'height';
+    });
   };
+
+  const fitModeLabel = useMemo(() => {
+    if (fitMode === 'height') return '높이';
+    if (fitMode === 'width') return '너비';
+    return '없음';
+  }, [fitMode]);
+
+  // Calculate pages for current view
+  // In single view: single page
+  // In double view:
+  // - page 0 is cover alone
+  // - pages 1, 2 are a spread (p.2 on left, p.3 on right)
+  // - pages 3, 4 are a spread (p.4 on left, p.6 on right)
+  const { leftPage, rightPage, isDoubleSpread } = useMemo(() => {
+    if (viewMode === 'single' || currentPageIndex === 0) {
+      return {
+        leftPage: bookData.pages[currentPageIndex] || bookData.pages[0],
+        rightPage: null,
+        isDoubleSpread: false,
+      };
+    }
+    const spreadOffset = (currentPageIndex - 1) % 2;
+    const leftIdx = currentPageIndex - spreadOffset;
+    const rightIdx = leftIdx + 1 < totalPages ? leftIdx + 1 : null;
+    return {
+      leftPage: bookData.pages[leftIdx],
+      rightPage: rightIdx !== null ? bookData.pages[rightIdx] : null,
+      isDoubleSpread: true,
+    };
+  }, [viewMode, currentPageIndex, totalPages]);
 
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Ignore key events when user is typing in search or input fields
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
         if (e.key === 'Escape') {
           setIsTocOpen(false);
@@ -120,22 +269,28 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [totalPages]);
+  }, [goToNextPage, goToPrevPage]);
 
-  // Click on book page handler (advance page on click)
-  const handlePageContentClick = (e) => {
-    // 1. If text was selected by mouse drag, do not flip page
+  // Intercept footnote and page hyperlinks
+  const handleMarkdownLinkClick = useCallback((e) => {
+    const link = e.target.closest('a[data-page-num]');
+    if (link) {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetPageNum = parseInt(link.getAttribute('data-page-num'), 10);
+      const targetIdx = pageNumToIdx[targetPageNum];
+      if (targetIdx !== undefined) {
+        goToPage(targetIdx);
+      }
+    }
+  }, [goToPage]);
+
+  // Click on single page card handler
+  const handleSinglePageClick = (e) => {
     const selection = window.getSelection();
-    if (selection && selection.toString().trim().length > 0) {
-      return;
-    }
+    if (selection && selection.toString().trim().length > 0) return;
+    if (e.target.closest('a, button, input, select, textarea')) return;
 
-    // 2. If click was on a link or button, do not flip
-    if (e.target.closest('a, button, input, select, textarea')) {
-      return;
-    }
-
-    // 3. Determine if clicked on the left margin (18% width) to backtrack, else advance
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     if (clickX < rect.width * 0.18) {
@@ -145,18 +300,90 @@ export default function App() {
     }
   };
 
+  // Click on double spread left page (navigates backward)
+  const handleLeftPageClick = (e) => {
+    const selection = window.getSelection();
+    if (selection && selection.toString().trim().length > 0) return;
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    goToPrevPage();
+  };
+
+  // Click on double spread right page (navigates forward)
+  const handleRightPageClick = (e) => {
+    const selection = window.getSelection();
+    if (selection && selection.toString().trim().length > 0) return;
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    goToNextPage();
+  };
+
+  // YouTube-style progress bar drag & hover logic
+  const getIndexFromRatio = useCallback((ratio) => {
+    return Math.max(0, Math.min(totalPages - 1, Math.round(ratio * (totalPages - 1))));
+  }, [totalPages]);
+
+  const handleBarMouseMove = (e) => {
+    if (!progressBarRef.current) return;
+    const rect = progressBarRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const ratio = x / rect.width;
+    setHoverRatio(ratio);
+    if (isDragging) {
+      const targetIdx = getIndexFromRatio(ratio);
+      goToPage(targetIdx);
+    }
+  };
+
+  const handleBarMouseDown = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+    if (!progressBarRef.current) return;
+    const rect = progressBarRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const ratio = x / rect.width;
+    setHoverRatio(ratio);
+    const targetIdx = getIndexFromRatio(ratio);
+    goToPage(targetIdx);
+  };
+
+  // Global mousemove/mouseup when dragging
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const onGlobalMouseMove = (e) => {
+      if (!progressBarRef.current) return;
+      const rect = progressBarRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const ratio = x / rect.width;
+      setHoverRatio(ratio);
+      const targetIdx = getIndexFromRatio(ratio);
+      goToPage(targetIdx);
+    };
+
+    const onGlobalMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', onGlobalMouseMove);
+    window.addEventListener('mouseup', onGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onGlobalMouseMove);
+      window.removeEventListener('mouseup', onGlobalMouseUp);
+    };
+  }, [isDragging, getIndexFromRatio, goToPage]);
+
   // Identify active H1 section for header indicator & TOC highlight
   const activeTocItem = useMemo(() => {
+    const targetIdx = leftPage ? leftPage.pageIndex : currentPageIndex;
     let current = null;
     for (const item of bookData.toc) {
-      if (item.pageIndex <= currentPageIndex) {
+      if (item.pageIndex <= targetIdx) {
         current = item;
       } else {
         break;
       }
     }
     return current;
-  }, [currentPageIndex]);
+  }, [leftPage, currentPageIndex]);
 
   // Scroll active TOC item into view when TOC opens
   useEffect(() => {
@@ -172,27 +399,45 @@ export default function App() {
     return bookData.toc.filter((item) => item.title.toLowerCase().includes(query));
   }, [tocSearch]);
 
-  // Render markdown HTML
-  const renderedHtml = useMemo(() => {
-    if (!currentPage.content || !currentPage.content.trim()) {
-      return '';
-    }
-    return marked.parse(currentPage.content);
-  }, [currentPage.content]);
+  // Render markdown HTML for pages with footnote link transformation
+  const renderedLeftHtml = useMemo(() => {
+    if (!leftPage || !leftPage.content || !leftPage.content.trim()) return '';
+    return processMarkdownWithFootnotes(leftPage.content, leftPage.pageNumber);
+  }, [leftPage]);
+
+  const renderedRightHtml = useMemo(() => {
+    if (!rightPage || !rightPage.content || !rightPage.content.trim()) return '';
+    return processMarkdownWithFootnotes(rightPage.content, rightPage.pageNumber);
+  }, [rightPage]);
 
   // Handle jump form submit
   const handleJumpSubmit = (e) => {
     e.preventDefault();
     const val = parseInt(jumpInput, 10);
     if (!isNaN(val)) {
-      // If user typed 1 to 332, convert to 0-indexed
       if (val >= 1 && val <= totalPages) {
         goToPage(val - 1);
       }
     }
   };
 
-  const progressPercent = ((currentPageIndex / (totalPages - 1)) * 100).toFixed(1);
+  // Progress metrics
+  const progressPercent = ((currentPageIndex / (totalPages - 1)) * 100).toFixed(2);
+  const previewIndex = isDragging ? currentPageIndex : getIndexFromRatio(hoverRatio);
+  const previewPage = bookData.pages[previewIndex] || bookData.pages[0];
+  const previewChapter = useMemo(() => {
+    let current = null;
+    for (const item of bookData.toc) {
+      if (item.pageIndex <= previewIndex) {
+        current = item;
+      } else {
+        break;
+      }
+    }
+    return current;
+  }, [previewIndex]);
+
+  const previewTooltipPercent = Math.max(5, Math.min(95, isDragging ? progressPercent : hoverRatio * 100));
 
   return (
     <div className="reader-app">
@@ -225,6 +470,63 @@ export default function App() {
         </div>
 
         <div className="header-right">
+          {/* View Mode (한쪽 보기 / 두쪽 보기) */}
+          <div className="view-mode-controls">
+            <button
+              type="button"
+              className={`btn-view-toggle ${viewMode === 'single' ? 'active' : ''}`}
+              onClick={() => setViewMode('single')}
+              title="한쪽 보기"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="5" y="3" width="14" height="18" rx="2" />
+              </svg>
+              <span>한쪽 보기</span>
+            </button>
+            <button
+              type="button"
+              className={`btn-view-toggle ${viewMode === 'double' ? 'active' : ''}`}
+              onClick={() => setViewMode('double')}
+              title="두쪽 보기 (펼침면)"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="2" y="3" width="9" height="18" rx="1.5" />
+                <rect x="13" y="3" width="9" height="18" rx="1.5" />
+              </svg>
+              <span>두쪽 보기</span>
+            </button>
+          </div>
+
+          {/* Fit Mode (화면 맞춤: 높이 / 맞춤 없음 / 너비) */}
+          <button
+            type="button"
+            className="btn-fit-toggle"
+            onClick={cycleFitMode}
+            title="화면 맞춤 전환 (높이 → 없음 → 너비)"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              {fitMode === 'height' && (
+                <>
+                  <line x1="12" y1="2" x2="12" y2="22" />
+                  <polyline points="8 6 12 2 16 6" />
+                  <polyline points="8 18 12 22 16 18" />
+                </>
+              )}
+              {fitMode === 'fit' && (
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+              )}
+              {fitMode === 'width' && (
+                <>
+                  <line x1="2" y1="12" x2="22" y2="12" />
+                  <polyline points="6 8 2 12 6 16" />
+                  <polyline points="18 8 22 12 18 16" />
+                </>
+              )}
+            </svg>
+            <span>{fitMode === 'fit' ? '맞춤 없음' : `맞춤: ${fitModeLabel}`}</span>
+          </button>
+
+          {/* Font Controls */}
           <div className="font-controls">
             <button
               type="button"
@@ -253,15 +555,11 @@ export default function App() {
               가+
             </button>
           </div>
-
-          <div className="page-badge-header">
-            도서 p.{currentPage.pageNumber}
-          </div>
         </div>
       </header>
 
       {/* Main Workspace */}
-      <main className="reader-workspace" ref={workspaceRef}>
+      <main className={`reader-workspace fit-${fitMode}`} ref={workspaceRef}>
         {/* Floating Side Navigation Buttons */}
         <button
           type="button"
@@ -287,53 +585,160 @@ export default function App() {
           </svg>
         </button>
 
-        {/* Book Page Card */}
-        <article className="reader-page-card" onClick={handlePageContentClick}>
-          <div className="page-click-indicator-prev" />
-          <div className="page-click-indicator-next" />
+        {/* Spread Container */}
+        <div className={`spread-container view-${isDoubleSpread ? 'double' : 'single'} fit-${fitMode}`}>
+          {/* Left Page (or Single Page) */}
+          {leftPage && (
+            <article
+              className="reader-page-card left-page"
+              onClick={isDoubleSpread ? handleLeftPageClick : handleSinglePageClick}
+              title={isDoubleSpread ? "클릭 시 이전 페이지로 이동" : "클릭 시 다음 페이지로 이동 (좌측 클릭 시 이전)"}
+            >
+              {!isDoubleSpread && <div className="page-click-indicator-prev" />}
 
-          {/* Book Page Header */}
-          <div className="page-card-header">
-            <span className="page-card-header-title">
-              {activeTocItem?.title || bookData.title}
-            </span>
-            <span className="page-card-header-num">
-              p. {currentPage.pageNumber}
-            </span>
-          </div>
+              {/* Book Page Header */}
+              {/* <div className="page-card-header">
+                <span className="page-card-header-title">
+                  {activeTocItem?.title || bookData.title}
+                </span>
+                <span className="page-card-header-num">
+                  p. {leftPage.pageNumber}
+                </span>
+              </div> */}
 
-          {/* Book Page Content */}
-          <div
-            className={`page-card-content font-${fontFamily}`}
-            style={{ fontSize: `${fontSize}px` }}
-          >
-            {renderedHtml ? (
-              <div
-                className="page-markdown"
-                dangerouslySetInnerHTML={{ __html: renderedHtml }}
-              />
-            ) : (
-              <div className="blank-page-notice">
-                본문이 없는 여백 페이지입니다.
+              {/* Book Page Content */}
+              {leftPage.pageIndex === 0 ? (
+                <div className="book-cover-container">
+                  <div className="cover-bg-num cover-bg-3" aria-hidden="true">3</div>
+                  <div className="cover-bg-num cover-bg-0" aria-hidden="true">0</div>
+                  <div className="cover-center-box">
+                    <div className="cover-title-group">
+                      <div className="cover-title-line">포항공과대학교</div>
+                      <div className="cover-title-line">총학생회</div>
+                      <div className="cover-title-line">30년사</div>
+                    </div>
+                    <div className="cover-divider" />
+                    <div className="cover-author">
+                      총학생회 30년사 편찬위원회 엮음
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={`page-card-content font-${fontFamily}`}
+                  style={{ fontSize: `${fontSize}px` }}
+                >
+                  {renderedLeftHtml ? (
+                    <div
+                      className="page-markdown"
+                      onClick={handleMarkdownLinkClick}
+                      dangerouslySetInnerHTML={{ __html: renderedLeftHtml }}
+                    />
+                  ) : (
+                    <div className="blank-page-notice">
+                      본문이 없는 여백 페이지입니다.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Book Page Footer */}
+              <div className="page-card-footer">
+                <span className="page-card-footer-number">
+                  - {leftPage.pageNumber} -
+                </span>
               </div>
-            )}
-          </div>
+            </article>
+          )}
 
-          {/* Book Page Footer */}
-          <div className="page-card-footer">
-            <span className="page-card-footer-number">
-              - {currentPage.pageNumber} -
-            </span>
-          </div>
-        </article>
+          {/* Right Page (Double View) */}
+          {isDoubleSpread && rightPage && (
+            <article
+              className="reader-page-card right-page"
+              onClick={handleRightPageClick}
+              title="클릭 시 다음 페이지로 이동"
+            >
+              {/* Book Page Header */}
+              {/* <div className="page-card-header">
+                <span className="page-card-header-title">
+                  {bookData.title}
+                </span>
+                <span className="page-card-header-num">
+                  p. {rightPage.pageNumber}
+                </span>
+              </div> */}
+
+              {/* Book Page Content */}
+              <div
+                className={`page-card-content font-${fontFamily}`}
+                style={{ fontSize: `${fontSize}px` }}
+              >
+                {renderedRightHtml ? (
+                  <div
+                    className="page-markdown"
+                    onClick={handleMarkdownLinkClick}
+                    dangerouslySetInnerHTML={{ __html: renderedRightHtml }}
+                  />
+                ) : (
+                  <div className="blank-page-notice">
+                    본문이 없는 여백 페이지입니다.
+                  </div>
+                )}
+              </div>
+
+              {/* Book Page Footer */}
+              <div className="page-card-footer">
+                <span className="page-card-footer-number">
+                  - {rightPage.pageNumber} -
+                </span>
+              </div>
+            </article>
+          )}
+        </div>
       </main>
 
-      {/* Bottom Bar */}
+      {/* Bottom Bar with YouTube-style Progress Bar */}
       <footer className="reader-bottom-bar">
+        {/* Interactive Progress Bar */}
         <div
-          className="reading-progress-bar"
-          style={{ width: `${progressPercent}%` }}
-        />
+          className={`progress-interactive-area ${isHoveringBar ? 'is-hovered' : ''} ${isDragging ? 'is-dragging' : ''}`}
+          ref={progressBarRef}
+          onMouseEnter={() => setIsHoveringBar(true)}
+          onMouseLeave={() => !isDragging && setIsHoveringBar(false)}
+          onMouseMove={handleBarMouseMove}
+          onMouseDown={handleBarMouseDown}
+        >
+          {/* Progress Track */}
+          <div className="progress-track">
+            {/* Filled Progress */}
+            <div
+              className="progress-fill"
+              style={{ width: `${progressPercent}%` }}
+            />
+
+            {/* Scrubber Dot (동그란 점) */}
+            <div
+              className="progress-scrubber-dot"
+              style={{ left: `${progressPercent}%` }}
+            />
+          </div>
+
+          {/* Floating Preview Tooltip */}
+          {(isHoveringBar || isDragging) && (
+            <div
+              className="progress-preview-tooltip"
+              style={{ left: `${previewTooltipPercent}%` }}
+            >
+              <div className="tooltip-page-num">
+                도서 p.{previewPage.pageNumber}
+                {previewChapter ? ` · ${previewChapter.title}` : ''}
+              </div>
+              <div className="tooltip-sub">
+                {previewIndex + 1} / {totalPages}
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           type="button"
@@ -361,7 +766,9 @@ export default function App() {
             />
             <span>/ {totalPages}</span>
             <span className="book-original-page-tag">
-              (도서 p.{currentPage.pageNumber})
+              {isDoubleSpread && rightPage
+                ? `(도서 p.${leftPage.pageNumber} ~ p.${rightPage.pageNumber})`
+                : `(도서 p.${leftPage?.pageNumber || 1})`}
             </span>
           </form>
         </div>

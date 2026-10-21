@@ -208,7 +208,7 @@ class SessionManager:
             except Exception:
                 pass
         return {
-            "book_title": "나의_스캔_도서",
+            "book_title": "포항공과대학교 총학생회 30년사",
             "pages": [],
             "next_page_num": 1,
             "selected_model": "qwen2.5:3b"
@@ -282,7 +282,7 @@ async def get_info():
         "mobile_usb_url": mobile_usb_url,
         "adb": adb_info,
         "ollama": ollama_info,
-        "book_title": session.data.get("book_title", "나의_스캔_도서"),
+        "book_title": session.data.get("book_title", "포항공과대학교 총학생회 30년사"),
         "current_preset": session.data.get("current_preset", 1),
         "total_pages": len(pages),
         "next_page_num": session.data.get("next_page_num", len(pages) + 1),
@@ -361,7 +361,7 @@ class BookTitleUpdate(BaseModel):
 
 @app.post("/api/title")
 async def update_title(body: BookTitleUpdate):
-    session.data["book_title"] = body.title.strip() or "나의_스캔_도서"
+    session.data["book_title"] = body.title.strip() or "포항공과대학교 총학생회 30년사"
     await session.save()
     return {"success": True, "title": session.data["book_title"]}
 

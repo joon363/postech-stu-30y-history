@@ -1,0 +1,70 @@
+/* Reset and Base Styles - Pure White Mode E-Book Reader */
+:root {
+  --bg-app: #f6f7f9;
+  --bg-page: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-hover: #f1f3f5;
+  --bg-active: #e9ecef;
+  
+  --border-light: #e9ecef;
+  --border-medium: #dee2e6;
+  --border-dark: #ced4da;
+  
+  --text-main: #1e2022;
+  --text-secondary: #495057;
+  --text-muted: #868e96;
+  --text-dim: #adb5bd;
+  
+  --primary: #212529;
+  --primary-hover: #000000;
+  --accent: #2563eb;
+  
+  --font-serif: "Noto Serif KR", "KoPub Batang", "Nanum Myeongjo", "Batang", serif;
+  --font-sans: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  
+  --page-shadow: 0 4px 24px rgba(0, 0, 0, 0.05), 0 1px 4px rgba(0, 0, 0, 0.03);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

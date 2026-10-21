@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BookScan Studio - 스마트 책 스캐너 & LLM 마크다운 변환기</title>
+  <meta name="description" content="스마트폰으로 책 사진을 찍어 고속 한글 OCR로 인식하고 로컬 LLM으로 깔끔한 마크다운으로 서식화하는 스마트 북 스튜디오">
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Marked.js for fast client-side markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+  <!-- Navigation Bar -->
+  <header class="navbar" id="main-navbar">
+    <div class="brand-section">
+      <span class="brand-logo">📖</span>
+      <div>
+        <h1 class="brand-title">BookScan Studio</h1>
+        <div class="brand-subtitle">Smart OCR & Local LLM Markdown Studio</div>
+      </div>
+    </div>
+
+    <!-- Book Title & Project Name -->
+    <div class="book-title-wrapper" id="book-title-container">
+      <span style="font-size: 16px;">📚</span>
+      <input type="text" id="input-book-title" class="book-title-input" value="나의_스캔_도서" placeholder="도서 제목 입력" title="책 제목">
+    </div>
+
+    <!-- Quick Status & Action Pills -->
+    <div class="nav-actions">
+      <!-- Mobile Connection Pill -->
+      <button class="status-pill" id="btn-open-mobile-modal" title="스마트폰 카메라 연결">
+        <span class="status-dot online" id="dot-mobile-status"></span>
+        <span id="label-mobile-connect">📱 핸드폰 연결 (QR)</span>
+      </button>
+
+      <!-- Ollama Status Pill -->
+      <button class="status-pill" id="btn-open-llm-modal" title="로컬 LLM 설정 및 연결">
+        <span class="status-dot offline" id="dot-llm-status"></span>
+        <span id="label-llm-status">LLM 로딩중...</span>
+      </button>
+
+      <!-- Top Batch Actions -->
+      <button class="btn btn-emerald btn-sm" id="btn-remote-snap" style="font-weight: 700; box-shadow: 0 0 16px rgba(16, 185, 129, 0.5);" title="스마트폰 원격 촬영 (단축키: 스페이스바)">
+        📸 폰 원격 촬영 (Space)
+      </button>
+
+      <!-- Preset Selector: 1 (연도) / 2 (일반) -->
+      <div class="preset-selector-group" id="preset-selector-group">
+        <span style="font-size: 11px; font-weight: 700; color: #94a3b8; margin-right: 2px;">프리셋:</span>
+        <button type="button" class="preset-btn active" id="btn-preset-1" data-preset="1" title="프리셋 1: 연도별 연표 (단축키: 1)">1 (연도)</button>
+        <button type="button" class="preset-btn" id="btn-preset-2" data-preset="2" title="프리셋 2: 일반 단체/목록 (단축키: 2)">2 (일반)</button>
+      </div>
+      <button class="btn btn-glass btn-sm" id="btn-batch-ocr" title="모든 페이지 일괄 OCR 실행">
+        ⚡ 전체 OCR
+      </button>
+      <button class="btn btn-glass btn-sm" id="btn-batch-format" title="모든 페이지 일괄 LLM 서식화">
+        ✨ 전체 서식화
+      </button>
+      <button class="btn btn-emerald btn-sm" id="btn-save-book" title="책 전체를 마크다운으로 저장">
+        💾 책 저장 (.md)
+      </button>
+      <button class="btn btn-glass btn-sm" id="btn-import-md" title="외부 맞춤법 검사기를 돌려온 MD 파일을 각 페이지 편집기에 일괄 반영">
+        📥 MD 불러오기
+      </button>
+      <input type="file" id="input-file-md" accept=".md,text/markdown" style="display: none;">
+      <button class="btn btn-primary btn-sm" id="btn-download-zip" title="이미지와 MD 일괄 다운로드">
+        📦 ZIP 다운로드
+      </button>
+    </div>
+  </header>
+
+  <!-- 3-Column Main Workspace -->
+  <main class="app-container" id="app-workspace">
+
+    <!-- Column 1: Page Explorer Sidebar -->
+    <section class="panel panel-sidebar" id="panel-page-explorer">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📑</span>
+          <span class="sidebar-title-text">페이지 (<span id="count-total-pages">0</span>)</span>
+        </div>
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <button class="btn btn-danger btn-sm sidebar-action-btn" id="btn-clear-pages" title="모든 페이지 비우기">
+            비우기
+          </button>
+          <button type="button" class="btn-icon" id="btn-toggle-sidebar" title="사이드바 접기/펼치기">
+            ◀
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-body sidebar-body">
+        <div class="sidebar-actions">
+          <input type="file" id="input-file-images" multiple accept="image/*" style="display: none;">
+          <input type="file" id="input-file-pdf" accept="application/pdf" style="display: none;">
+
+          <button class="btn btn-glass btn-sm" id="btn-trigger-add-images">
+            📷 사진 추가
+          </button>
+          <button class="btn btn-glass btn-sm" id="btn-trigger-add-pdf">
+            📄 PDF 추가
+          </button>
+        </div>
+
+        <!-- Drag & Drop Zone -->
+        <div class="dropzone" id="desktop-dropzone">
+          <div class="dropzone-icon">📥</div>
+          <div class="dropzone-text">사진이나 PDF 드래그</div>
+        </div>
+
+        <!-- Scrollable Pages List -->
+        <div class="pages-list" id="pages-list-container">
+          <div style="text-align: center; color: var(--text-muted); padding: 40px 10px; font-size: 13px;" id="empty-state-pages">
+            아직 추가된 페이지가 없습니다.<br>
+            스마트폰에서 촬영하거나 사진을 드래그하세요!
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Column 2: 1. 원본 사진 (확대/드래그 내장) -->
+    <section class="panel panel-viewer" id="panel-image-viewer">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>🖼️</span>
+          <span id="selected-page-title">사진: 선택 없음</span>
+          <span class="badge-preset" id="badge-page-preset" style="display: none;">프리셋 1</span>
+        </div>
+        <div class="img-toolbar">
+          <button type="button" class="btn-tool" id="btn-zoom-in" title="확대 (마우스 휠 위)">➕</button>
+          <button type="button" class="btn-tool" id="btn-zoom-out" title="축소 (마우스 휠 아래)">➖</button>
+          <button type="button" class="btn-tool" id="btn-zoom-fit" title="화면 맞춤 (더블클릭)">🎯 맞춤</button>
+          <button type="button" class="btn-tool" id="btn-rotate-img" title="90도 회전">🔄</button>
+          <span class="zoom-badge" id="zoom-badge">100%</span>
+        </div>
+      </div>
+
+      <div class="panel-body panel-image-body">
+        <div class="image-zoom-viewport" id="image-viewer-container">
+          <img src="" alt="페이지 이미지" id="main-preview-image" class="main-preview-img" style="display: none;">
+          <div id="no-image-placeholder" class="no-image-placeholder">
+            <span>📷 페이지를 선택하면 원본 사진이 표시됩니다</span>
+          </div>
+          <div class="zoom-hint-pill">휠: 확대/축소 · 드래그: 이동 · 더블클릭: 맞춤</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Column 3: 2. md 편집기 -->
+    <section class="panel panel-editor" id="panel-markdown-editor">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📝</span>
+          <span>MD 편집기</span>
+          <span class="char-count-pill"><span id="md-char-count">0</span>자</span>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="btn btn-glass btn-sm" id="btn-run-single-ocr" title="이 페이지 OCR 다시 실행">
+            ⚡ OCR 실행
+          </button>
+          <button class="btn btn-primary btn-sm" id="btn-run-single-format" title="LLM 서식화 실행">
+            ✨ LLM 서식화
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-body panel-editor-body">
+        <textarea id="textarea-markdown-edit" class="markdown-textarea-standalone" placeholder="마크다운 텍스트를 입력하거나 수정하세요. 입력 즉시 오른쪽 프리뷰에 실시간 반영되며 자동 저장됩니다."></textarea>
+        <!-- OCR 추출 원본 (보관용/호환용) -->
+        <textarea id="textarea-ocr-raw" style="display: none;"></textarea>
+      </div>
+    </section>
+
+    <!-- Column 4: 3. 프리뷰 -->
+    <section class="panel panel-preview" id="panel-markdown-preview">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>👁️</span>
+          <span>실시간 프리뷰</span>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="btn btn-glass btn-sm" id="btn-copy-markdown" title="마크다운 복사">
+            📋 마크다운 복사
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-body panel-preview-body">
+        <div id="pane-markdown-preview" class="markdown-preview-pane-standalone">
+          <p style="color: var(--text-muted); font-style: italic;">
+            페이지를 선택하면 마크다운 서식이 실시간으로 렌더링됩니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Modal: Mobile Connection (USB ADB & Wi-Fi HTTPS) -->
+  <div class="modal-overlay" id="modal-mobile-connect">
+    <div class="modal-card" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3 style="font-size: 16px; font-weight: 700;">📱 핸드폰 카메라 연결 (2가지 방법)</h3>
+        <button class="btn btn-glass btn-sm" id="btn-close-mobile-modal">✕</button>
+      </div>
+      <div class="modal-body" style="padding: 18px 20px;">
+        <!-- Connection Tabs -->
+        <div class="tabs-nav" style="margin-bottom: 14px;">
+          <button class="tab-btn active" id="tab-btn-conn-usb" style="flex: 1;">🔌 1. USB 디버깅 (추천·무경고)</button>
+          <button class="tab-btn" id="tab-btn-conn-https" style="flex: 1;">📶 2. Wi-Fi 무선 (HTTPS)</button>
+        </div>
+
+        <!-- Tab 1: USB Debugging (adb reverse) -->
+        <div id="conn-pane-usb" style="display: block;">
+          <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #a7f3d0; margin-bottom: 12px;">
+            <strong>✨ USB 연결의 장점:</strong> 브라우저 보안 경고가 전혀 뜨지 않으며, <code>localhost</code>로 인식되어 카메라가 100% 즉시 켜지고 전송 속도가 가장 빠릅니다.
+          </div>
+
+          <ol style="font-size: 13px; color: var(--text-secondary); padding-left: 20px; line-height: 1.8; margin-bottom: 14px;">
+            <li>스마트폰을 USB 케이블로 노트북에 연결합니다.</li>
+            <li>스마트폰 <strong>[설정] - [개발자 옵션] - [USB 디버깅]</strong>을 켭니다.</li>
+            <li>아래 <strong>'⚡ ADB 포트포워딩 실행'</strong> 버튼을 클릭합니다.</li>
+            <li>스마트폰 크롬/삼성인터넷 주소창에 아래 주소를 입력합니다:</li>
+          </ol>
+
+          <div class="code-box" style="margin-bottom: 12px;">
+            <strong style="color: #38bdf8;">http://localhost:8000/mobile</strong>
+            <button class="btn btn-glass btn-sm" onclick="navigator.clipboard.writeText('http://localhost:8000/mobile')">복사</button>
+          </div>
+
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-emerald btn-sm" id="btn-trigger-adb" style="flex: 1;">
+              ⚡ ADB 포트포워딩 실행 (adb reverse)
+            </button>
+          </div>
+          <div id="adb-status-feedback" style="font-size: 12px; color: var(--text-muted); margin-top: 8px; text-align: center;"></div>
+        </div>
+
+        <!-- Tab 2: Wi-Fi Wireless HTTPS -->
+        <div id="conn-pane-https" style="display: none; text-align: center;">
+          <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+            스마트폰 카메라로 아래 <strong>HTTPS QR 코드</strong>를 스캔하세요:
+          </p>
+
+          <div style="background: white; padding: 12px; border-radius: 12px; display: inline-block; margin: 4px auto 10px; box-shadow: var(--shadow-md);">
+            <img src="/api/qr?mode=https" alt="HTTPS QR Code" id="img-qr-code-https" style="width: 170px; height: 170px; display: block;">
+          </div>
+
+          <div class="code-box" style="margin-bottom: 10px;">
+            <span id="text-mobile-https-url" style="word-break: break-all; font-size: 12px;">https://192.168.0.164:8443/mobile</span>
+            <button class="btn btn-glass btn-sm" id="btn-copy-https-url">복사</button>
+          </div>
+
+          <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 11px; color: #fde68a; text-align: left; line-height: 1.6;">
+            <strong>⚠️ 1회성 자체서명 인증서 통과 방법:</strong><br>
+            화면에 "연결이 비공개로 설정되어 있지 않습니다" 경고가 뜨면,<br>
+            화면 아래쪽 <strong>[고급]</strong> 버튼을 누른 후 <strong>[안전하지 않음으로 이동 (계속)]</strong>을 누르면 카메라가 정상 허용됩니다.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Local LLM Settings & RTX 4050 Guide -->
+  <div class="modal-overlay" id="modal-llm-settings">
+    <div class="modal-card" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3 style="font-size: 16px; font-weight: 700;">🤖 로컬 LLM 설정 & 추천 안내</h3>
+        <button class="btn btn-glass btn-sm" id="btn-close-llm-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 10px; padding: 12px 14px; font-size: 13px;">
+          <strong>💡 RTX 4050 (6GB VRAM) 최적 권장:</strong><br>
+          Ollama는 별도의 복잡한 CUDA 설치 없이 자체 GPU 가속을 지원합니다.<br>
+          가장 빠르고 한글 서식화 품질이 우수한 <code>qwen2.5:3b</code>를 강력 추천합니다!
+        </div>
+
+        <div>
+          <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 6px;">
+            1단계: Ollama 초간단 설치 (PowerShell 터미널)
+          </label>
+          <div class="code-box">
+            <span>winget install Ollama.Ollama</span>
+            <button class="btn btn-glass btn-sm" onclick="navigator.clipboard.writeText('winget install Ollama.Ollama')">복사</button>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 6px;">
+            2단계: 경량 LLM 모델 실행 (RTX 4050 최적 2GB 점유)
+          </label>
+          <div class="code-box">
+            <span>ollama run qwen2.5:3b</span>
+            <button class="btn btn-glass btn-sm" onclick="navigator.clipboard.writeText('ollama run qwen2.5:3b')">복사</button>
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid var(--border-color); padding-top: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 13px; font-weight: 600;">현재 Ollama 상태:</span>
+            <span id="llm-modal-status-badge" style="font-size: 12px; color: var(--accent-amber);">확인 중...</span>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <select id="select-llm-model" style="flex: 1; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); padding: 8px; font-family: inherit; font-size: 13px;">
+              <option value="qwen2.5:3b">qwen2.5:3b (추천)</option>
+              <option value="qwen2.5:7b">qwen2.5:7b (고품질)</option>
+              <option value="smart_regex">스마트 정규식 서식기 (LLM 미사용/즉시)</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="btn-refresh-llm">
+              🔄 연결 재확인
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Main Application Script -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
